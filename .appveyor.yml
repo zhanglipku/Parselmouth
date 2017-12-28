@@ -9,14 +9,11 @@ configuration:
   - Release
 environment:
   matrix:
-    - PYTHON: 27
-    - PYTHON: 34
-    - PYTHON: 35
-    - PYTHON: 36
+    #- PYTHON: 27
+    #- PYTHON: 34
+    #- PYTHON: 35
+    #- PYTHON: 36
     - WHEELS: 1
-      CIBW_SKIP: cp33-* cp35-* cp36-*
-    - WHEELS: 1
-      CIBW_SKIP: cp27-* cp33-* cp34-*
 
 matrix:
   exclude:
@@ -28,8 +25,12 @@ matrix:
       PYTHON: 34
     - platform: x86
       PYTHON: 35
-    - configuration: Release
-      platform: x86
+    - platform: x86
+      configuration: Release
+      PYTHON: 27
+    - platform: x86
+      configuration: Release
+      PYTHON: 36
     - configuration: Debug
       WHEELS: 1
 
@@ -42,15 +43,22 @@ branches:
     - docs
 
 install:
+# git+https://github.com/frerich/clcache.git
   - ps: |
       C:\Python36\Scripts\pip install clcache
       if ($env:PLATFORM -eq "x64") {
-        $env:CLCACHE_CL = invoke-command { cmd /C 'call "C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvars64.bat" > NUL && where cl' }
+        $CL = invoke-command { cmd /C 'call "C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvars64.bat" > NUL && where cl' }
+        $CL = $CL -replace "HostX64", "HostX86" # Because CMake finds the one in the HostX86 subfolder...
       }
       else {
-        $env:CLCACHE_CL = invoke-command { cmd /C 'call "C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvars32.bat" > NUL && where cl' }
+        $CL = invoke-command { cmd /C 'call "C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvars32.bat" > NUL && where cl' }
       }
-      echo $env:CLCACHE_CL
+      $CL_DIR = split-path $CL
+      move-item (join-path $CL_DIR cl.exe) (join-path $CL_DIR cl_orig.exe)
+      move-item (join-path $CL_DIR cl.exe.config) (join-path $CL_DIR cl_orig.exe.config)
+      copy-item C:\Python36\Scripts\clcache.exe (join-path $CL_DIR cl.exe)
+      copy-item C:\Python36\Scripts\clcache-script.py (join-path $CL_DIR cl-script.py)
+      $env:CLCACHE_CL = join-path $CL_DIR cl_orig.exe
   - ps: |
       if ($env:PLATFORM -eq "x64") { $env:CMAKE_ARCH = "x64" }
       if ($env:PYTHON) {
@@ -60,12 +68,27 @@ install:
   - pip install --disable-pip-version-check --user --upgrade pip wheel
   - pip install numpy
   - if defined WHEELS ( pip install cibuildwheel )
+  #https://github.com/YannickJadoul/cibuildwheel/archive/pip-verbose.zip
+  - ps: |
+      if ($env:WHEELS) {
+        if ($env:PLATFORM -eq "x64") {
+          $env:CIBW_SKIP = "*-win32"
+        }
+        else {
+          $env:CIBW_SKIP = "*-win_amd64"
+        }
+        $env:CIBW_SKIP = $env:CIBW_SKIP + " cp33-*"
+        $env:CIBW_BEFORE_BUILD = "C:\Python36\Scripts\clcache -s"
+        C:\Python36\Scripts\clcache -C
+        C:\Python36\Scripts\clcache -z
+        C:\Python36\Scripts\clcache -M 1073741824
+        "import os; os.environ['CLCACHE_BASEDIR'] = os.path.dirname(__file__); print(os.environ['CLCACHE_BASEDIR'])`n" + (get-content setup.py -raw) | set-content setup.py # Ugliest hack ever, but hey, it works
+      }
 build_script:
   - if defined WHEELS ( set PYTHONUNBUFFERED=1 && cibuildwheel --output-dir wheelhouse )
   - if not defined WHEELS ( cmake -G "Visual Studio 15 2017" -A "%CMAKE_ARCH%" -DCMAKE_SUPPRESS_REGENERATION=1 -DCMAKE_CXX_FLAGS="/MP" -DCMAKE_CXX_FLAGS_DEBUG="/MDd /Z7 /Ob0 /Od /RTC1" )
   - if not defined WHEELS ( set MSBuildLogger="C:\Program Files\AppVeyor\BuildAgent\Appveyor.MSBuildLogger.dll" )
-  #- if not defined WHEELS ( cmake --build . --config "%CONFIGURATION%" --target install -- /v:m /logger:%MSBuildLogger% )
-  - if not defined WHEELS ( cmake --build . --config "%CONFIGURATION%" --target install -- /logger:%MSBuildLogger% /p:TrackFileAccess=false /p:CLToolPath=C:\Python36\Scripts /p:CLToolExe=clcache.exe )
+  - if not defined WHEELS ( cmake --build . --config "%CONFIGURATION%" --target install -- /v:m /logger:%MSBuildLogger% /p:TrackFileAccess=false )
   - C:\Python36\Scripts\clcache -s
 test_script:
   - if not defined WHEELS ( cd installed && python -c "import parselmouth" )
